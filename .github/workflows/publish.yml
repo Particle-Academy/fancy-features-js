@@ -26,13 +26,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      # FIRST-PUBLISH BOOTSTRAP (token auth): a Trusted Publisher can't authorize
-      # a package that doesn't exist yet, so the very first publish authenticates
-      # with NPM_TOKEN. Provenance is still signed via OIDC (id-token: write).
-      # AFTER this first version lands: add the Trusted Publisher on npmjs, revoke
-      # the token, and DELETE the `env:` block below to revert to pure OIDC.
-      # npm 11.5.1+ needed (runner ships 10.x) → fetch a fresh npm via npx.
+      # Trusted Publishing (OIDC) — no tokens. Requires npm 11.5.1+ (the runner
+      # ships npm 10.x), so fetch a fresh npm via npx. The repo's Trusted
+      # Publisher (npmjs.com → package → Access) authorizes this workflow.
       - name: Publish
         run: npx -y npm@latest publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
