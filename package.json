@@ -1,6 +1,6 @@
 {
   "name": "@particle-academy/fancy-features",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Headless, zero-dependency feature-management engine (boolean + metered-resource gating, feature groups, quota usage). The Node/TypeScript mirror of the PHP particle-academy/laravel-fms — and the owner of the shared feature contract consumed by @particle-academy/fancy-catalog.",
   "repository": {
     "type": "git",
