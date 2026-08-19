@@ -73,6 +73,44 @@ export interface FeatureManagerOptions {
  *   pre-remaining strategies → MAX(group/source limit, feature.limit) − usage, clamped ≥0.
  *   `null` ⇒ unlimited.
  */
+/**
+ * Invoke a `usage` / `remaining` definition callback.
+ *
+ * These take `(subject, context)`. They used to take
+ * `(featureKey, subject, context)`, and laravel-fms fixed that in 0.8.0 — the
+ * key is already known where the callback is defined, so passing it only
+ * creates an off-by-one waiting to happen.
+ *
+ * This twin kept passing three arguments unconditionally, so a consumer writing
+ * the current, documented two-parameter form got `subject` bound to the feature
+ * KEY. A string is not a subject, so usage resolved to nothing and the allowance
+ * never ran out — a silent over-grant, in the direction that costs money.
+ *
+ * Dispatch on arity, exactly as the PHP twin does: `Function.length` is the
+ * declared parameter count, so a 3-param callback is unambiguously the old
+ * order. Support for it is removed at 1.0.
+ */
+function callDefinitionCallback<R>(
+  callback: (...args: never[]) => R | Promise<R>,
+  feature: string,
+  subject: Subject,
+  context?: unknown,
+): R | Promise<R> {
+  if (callback.length === 3) {
+    console.warn(
+      `fancy-features: the \`${feature}\` usage/remaining callback takes three parameters, which is the ` +
+        "pre-0.8 `(feature, subject, context)` order. Change it to `(subject, context)` — the feature key is " +
+        "already known where the callback is defined. Support for the old order is removed at 1.0.",
+    );
+    return (callback as unknown as (f: string, s: Subject, c?: unknown) => R | Promise<R>)(
+      feature,
+      subject,
+      context,
+    );
+  }
+  return (callback as unknown as (s: Subject, c?: unknown) => R | Promise<R>)(subject, context);
+}
+
 export class FeatureManager {
   readonly registry: FeatureRegistry;
   readonly groupRegistry: FeatureGroupRegistry;
@@ -544,7 +582,7 @@ export class FeatureManager {
     context?: unknown,
   ): Promise<number | null> {
     if (typeof definition.remaining === "function") {
-      return definition.remaining(feature, subject, context);
+      return callDefinitionCallback(definition.remaining, feature, subject, context);
     }
     const rawLimit = definition.limit;
     const limit =
@@ -563,7 +601,7 @@ export class FeatureManager {
     context?: unknown,
   ): Promise<number> {
     if (typeof definition.usage === "function") {
-      return definition.usage(feature, subject, context);
+      return callDefinitionCallback(definition.usage, feature, subject, context);
     }
     return this.usage.getUsage(subject, feature);
   }

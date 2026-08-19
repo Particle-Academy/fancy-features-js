@@ -15,6 +15,33 @@ upgrading.
 
 ## [Unreleased]
 
+## 0.3.0 — 2026-08-18
+
+### Fixed
+
+- **`usage` / `remaining` callbacks were passed the feature key as the subject,
+  so metered features silently metered nothing.** These callbacks take
+  `(subject, context)` — the same shape as `enabled`, `check` and `limit` in the
+  same interface. This package passed three arguments unconditionally, and typed
+  them that way, so a consumer writing the documented two-parameter form got the
+  feature KEY bound to `subject`. A string is not a subject, usage resolved to
+  nothing, and **the allowance never ran out** — an over-grant, in the direction
+  that costs money.
+
+  `laravel-fms` fixed this in its 0.8.0 and dispatches on the callback's arity.
+  This twin never did, so the two runtimes have disagreed ever since: the same
+  callback meters correctly on PHP and not at all here.
+
+  Now identical to PHP — a two-parameter callback receives `(subject, context)`,
+  a three-parameter one is still honoured with a deprecation warning, and
+  support for the old order is removed at 1.0. Both shapes type-check.
+
+  **What to do:** if your callback takes `(key, subject, context)`, it keeps
+  working and now warns; drop the first parameter. If it takes
+  `(subject, context)` you were affected — check whether any metered allowance
+  has been failing to run out.
+
+
 ## 0.2.0 — 2026-08-07
 
 ### Changed

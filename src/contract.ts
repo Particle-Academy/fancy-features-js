@@ -28,6 +28,14 @@ export interface BillingPeriod {
  * A resolved entitlement for ONE feature, for ONE subject — what a FeatureSource returns.
  * (The Node analog of a `product_feature_configs` pivot row resolved for a subscription.)
  */
+/**
+ * A `usage` / `remaining` callback. Current form first; the legacy three-param
+ * order is accepted until 1.0 so existing consumers keep compiling.
+ */
+export type FeatureUsageCallback<R> =
+  | ((s: Subject, c?: unknown) => R | Promise<R>)
+  | ((key: string, s: Subject, c?: unknown) => R | Promise<R>);
+
 export interface FeatureGrant {
   key: string; // feature key (== Feature.key == ProductFeature.key)
   type: FeatureType; // "boolean" | "resource"
@@ -89,12 +97,18 @@ export interface Feature {
   enabled?: boolean | ((s: Subject, c?: unknown) => boolean | Promise<boolean>);
   check?: (s: Subject, c?: unknown) => boolean | Promise<boolean>; // custom access check
   limit?: number | ((s: Subject, c?: unknown) => number | Promise<number>); // resource
-  usage?: (key: string, s: Subject, c?: unknown) => number | Promise<number>; // resource
-  remaining?: (
-    key: string,
-    s: Subject,
-    c?: unknown,
-  ) => number | null | Promise<number | null>;
+  /**
+   * Metered usage. Takes `(subject, context)` — the same shape as `enabled`,
+   * `check` and `limit` above.
+   *
+   * The three-parameter `(key, subject, context)` form is the pre-0.8 order and
+   * is still accepted, with a deprecation warning, until 1.0. It is the reason
+   * this callback used to be the odd one out in this interface: a consumer who
+   * reasonably assumed uniformity wrote two parameters, got the feature KEY
+   * bound to `subject`, and metered nothing — so the allowance never ran out.
+   */
+  usage?: FeatureUsageCallback<number>; // resource
+  remaining?: FeatureUsageCallback<number | null>;
 }
 
 export interface FeatureGroup {
