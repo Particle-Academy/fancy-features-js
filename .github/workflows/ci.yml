@@ -21,10 +21,25 @@ jobs:
       - name: Install
         run: npm install --no-audit --no-fund
 
+      # shared/feature-entitlement is newer than the released fixture package,
+      # so the rows come from a checkout until fancy-conformance cuts the
+      # release that carries them. FANCY_CONFORMANCE_ROOT is read FIRST by the
+      # runner and a missing root is a FAILURE, not a skip -- a conformance
+      # suite that silently does not run reads exactly like full coverage.
+      #
+      # Drop this step (and the env below) once the installed package has it.
+      - name: Check out the shared conformance fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: Particle-Academy/fancy-conformance
+          path: .fancy-conformance
+
       - name: Type-check
         run: npm run lint
 
       - name: Test
+        env:
+          FANCY_CONFORMANCE_ROOT: ${{ github.workspace }}/.fancy-conformance
         run: npm test
 
       - name: Build

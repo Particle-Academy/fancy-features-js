@@ -12,9 +12,9 @@ freezes at whatever the rule was when the branch was cut.
 
 A `FeatureManager` that answers three questions about a subject:
 
-- **is this feature on** (`canAccess`, `isEnabled`, `hasFeature`)
-- **how much is left** (`remaining`)
-- **may I take some** (`tryConsume`, `increment`, `decrement`)
+- **is the subject ENTITLED to this** (`canAccess`, `isEntitled`, `isEnabled`, `hasFeature`)
+- **how much is left** (`remaining`, `overageFor`)
+- **may I take some** (`canConsume` to read, `tryConsume` to write, `increment`, `decrement`)
 
 It owns no storage. A `usage` store and any number of `FeatureSource`s are
 injected; the manager resolves across them.
@@ -22,6 +22,33 @@ injected; the manager resolves across them.
 `fancy-features` owns the **`FeatureSource` contract**. `fancy-catalog` mirrors
 it and re-exports it from its `./features` subpath. When the contract changes it
 changes here first.
+
+## Entitlement is not quota
+
+`canAccess` answers **entitlement**, on every branch. It used to answer
+"enabled AND quota remains" for a `FeatureSource` grant while answering
+"enabled" for the same feature defined in the registry — one question with two
+answers, decided by which layer the plan happened to be modelled in.
+
+Do not re-merge them. `entitled()` in `src/quota.ts` takes `includedQuantity`
+and `used` and is required to ignore them; conformance rows `0002` and `0004`
+fail if it stops.
+
+## Billable overage
+
+`overageLimit` is a **ceiling** on consumption past the included quantity, and
+**null means no overage**. That reading is load-bearing: the field was carried by
+three runtimes and read by none until 0.5.0, so every configuration in existence
+has it unset, and "unbounded" would make each one an unlimited spending
+authority.
+
+**Overage is permitted only when it can be RECORDED** — a store implementing
+`addOverage`, or an `onOverage` listener. A host with neither keeps today's
+behaviour. That is the opt-in mechanism and it fails closed on purpose: unbilled
+usage is the one failure here that cannot be repaired after the fact.
+
+`overageDelta()` is **signed**, so `increment` and `decrement` share it. Do not
+split it into two functions — that is how the two directions drift.
 
 ## Resolution order
 
@@ -50,6 +77,13 @@ wins, so a plan can raise a quota but never silently lower one.
 - **`remaining()` returning `null` means unlimited, not zero.** The PHP twin
   denied on null for a while, which turned the most generous configuration into
   the most restrictive outcome.
+
+- **`remaining + used` is NOT the included quantity.** `remaining` is clamped
+  at zero, so once a subject is in overage that sum reports the limit as
+  whatever they have already spent — and every overage figure downstream then
+  measures from the wrong line. `limitFor()` resolves the limit directly; use
+  it, and only fall back to the derivation where a caller-supplied `remaining`
+  callback owns the answer.
 
 ## Parity
 

@@ -122,7 +122,13 @@ describe("resolution chain — FeatureSource grants (catalog plug-in point)", ()
     expect(await f.canAccess("use-mcp", user)).toBe(false);
   });
 
-  it("a resource grant enables only while quota remains", async () => {
+  it("a resource grant stays ENTITLED when the quota is exhausted", async () => {
+    // Changed in 0.5.0, and this test used to assert the opposite.
+    //
+    // A grant-sourced resource feature was on only while quota remained, while
+    // the same feature defined in the registry (above) was on regardless. One
+    // question, two answers, decided by which layer the plan happened to be
+    // modelled in. `canAccess` now answers entitlement in both.
     const source: FeatureSource = {
       name: "catalog",
       grantsFor: () => [
@@ -134,7 +140,14 @@ describe("resolution chain — FeatureSource grants (catalog plug-in point)", ()
     expect(await f.remaining("ai-tokens", user)).toBe(5);
     await f.increment("ai-tokens", user, 5);
     expect(await f.remaining("ai-tokens", user)).toBe(0);
-    expect(await f.canAccess("ai-tokens", user)).toBe(false);
+
+    // Still entitled — the customer is still paying for it.
+    expect(await f.canAccess("ai-tokens", user)).toBe(true);
+    expect(await f.isEntitled("ai-tokens", user)).toBe(true);
+
+    // The quota question moved here, and to `tryConsume` for an actual write.
+    expect(await f.canConsume("ai-tokens", user, 1)).toBe(false);
+    expect(await f.tryConsume("ai-tokens", user, 1)).toBe(false);
   });
 
   it("an async source resolves grants", async () => {

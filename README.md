@@ -46,13 +46,55 @@ await features.remaining("ai-tokens", user); // 50000 − usage
 
 `createFeatures(opts)` / `new FeatureManager(opts)`:
 
-- `canAccess(key, subject?, context?)` → `Promise<boolean>` (`isEnabled` / `hasFeature` are aliases)
+- `canAccess(key, subject?, context?)` → `Promise<boolean>` — **entitlement**
+  (`isEntitled` / `isEnabled` / `hasFeature` are aliases)
+- `canConsume(key, subject?, amount?, context?, period?)` → `Promise<boolean>` — entitled **and** it fits
 - `remaining(key, subject?, context?)` → `Promise<number | null>` (`null` = unlimited)
 - `enabled(subject?, context?)` → `Promise<string[]>` (all enabled keys)
 - `explain(key, subject?, context?)` → `Promise<AccessResult>` (`{ allowed, source, remaining?, limit?, used? }`)
 - `registerPreStrategy` / `registerPreRemainingStrategy`
 - `registerSource(FeatureSource)` · `registerFeature(key, def)` · `registerGroup(group)`
-- **Quota helpers**: `increment` · `decrement` · `tryConsume` (atomic) · `usageFor` · `resetPeriod`
+- **Quota helpers**: `increment` · `decrement` · `tryConsume` (atomic) · `usageFor` · `overageFor` · `resetPeriod`
+- `onOverage(listener)` → unsubscribe
+
+### Entitlement is not quota
+
+`canAccess` answers **entitlement**: is this feature granted, regardless of how
+much of the allowance is left. A metered feature whose quota is exhausted is
+still entitled — the customer is still paying for it — so hiding it at the moment
+they are spending most would be the opposite of useful.
+
+`canConsume` is a **read**. Between it and the write that follows, another
+request can take the last unit; `tryConsume` is the one that cannot be raced.
+
+> **Changed in 0.5.0.** A `FeatureSource` grant used to be "on" only while quota
+> remained, while the same feature defined in the registry was on regardless. If
+> you used `canAccess` as a consumption gate, move to `canConsume` or
+> `tryConsume` — see the CHANGELOG entry.
+
+### Billable overage
+
+`FeatureGrant.overageLimit` (and `Feature.overageLimit`) is a **ceiling** on
+consumption past the included quantity. `null` or `0` means no overage, which is
+what every configuration written before 0.5.0 says.
+
+**Overage is permitted only when it can be recorded** — a `UsageStore`
+implementing `addOverage` / `getOverage` (the bundled `InMemoryUsageStore`
+does), or an `onOverage` listener that takes responsibility for it. With
+neither, the ceiling stays at the included quantity, exactly as before. It fails
+closed on purpose: unbilled usage is the one failure that cannot be repaired
+afterwards.
+
+```ts
+features.onOverage(({ feature, subject, units, totalUnits, period }) => {
+  // units      — billable units from THIS consumption
+  // totalUnits — running total for the period
+});
+```
+
+Recording is in scope; invoicing is not. Reporting metered usage to Stripe needs
+a subscription *item* id a headless gating engine does not have and must not
+guess.
 
 **Registry** — `FeatureRegistry`: array | factory fn | class-with-`definition()`.
 

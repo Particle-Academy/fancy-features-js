@@ -9,7 +9,18 @@ export type {
   AccessResult,
   Feature,
   FeatureGroup,
+  OverageEvent,
+  OverageListener,
 } from "./contract";
+
+// ---- Quota arithmetic (pinned by the shared/feature-entitlement suite) ----
+export {
+  entitled,
+  consumptionCeiling,
+  allowsConsumption,
+  overageDelta,
+  canConsume,
+} from "./quota";
 
 // ---- FeatureManager + factory ----
 export {

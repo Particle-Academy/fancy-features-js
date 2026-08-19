@@ -11,6 +11,15 @@ import { defaultSubjectKey } from "./groups";
  */
 export class InMemoryUsageStore implements UsageStore {
   private usage = new Map<string, number>();
+  /**
+   * Billable overage, in its own map rather than folded into `usage`.
+   *
+   * Recorded, never derived. `Math.max(0, used - included)` at read time is one
+   * map cheaper and quietly wrong: when a plan is upgraded mid-period the
+   * included quantity rises and overage that was genuinely incurred -- possibly
+   * already reported to a billing provider -- vanishes from the derivation.
+   */
+  private overage = new Map<string, number>();
   private keyOf: (subject: Subject) => string;
 
   constructor(keyOf?: (subject: Subject) => string) {
@@ -29,6 +38,17 @@ export class InMemoryUsageStore implements UsageStore {
     const cell = this.cell(subject, featureKey, period);
     // Clamp at 0 so decrements never drive usage negative (mirrors `decrement`).
     this.usage.set(cell, Math.max(0, (this.usage.get(cell) ?? 0) + amount));
+  }
+
+  /** Billable overage recorded against this subject + feature in the period. */
+  getOverage(subject: Subject, featureKey: string, period?: BillingPeriod): number {
+    return this.overage.get(this.cell(subject, featureKey, period)) ?? 0;
+  }
+
+  /** Record a signed change in billable overage. Clamped at 0, as usage is. */
+  addOverage(subject: Subject, featureKey: string, amount: number, period?: BillingPeriod): void {
+    const cell = this.cell(subject, featureKey, period);
+    this.overage.set(cell, Math.max(0, (this.overage.get(cell) ?? 0) + amount));
   }
 
   /** Atomic-in-process check-and-increment. Returns false if it would exceed `limit`. */
@@ -52,9 +72,11 @@ export class InMemoryUsageStore implements UsageStore {
   resetPeriod(subject: Subject, period: BillingPeriod): void {
     const prefix = `${this.keyOf(subject)}::`;
     const suffix = `::${periodKey(period)}`;
-    for (const key of [...this.usage.keys()]) {
-      if (key.startsWith(prefix) && key.endsWith(suffix)) {
-        this.usage.delete(key);
+    for (const map of [this.usage, this.overage]) {
+      for (const key of [...map.keys()]) {
+        if (key.startsWith(prefix) && key.endsWith(suffix)) {
+          map.delete(key);
+        }
       }
     }
   }

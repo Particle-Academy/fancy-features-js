@@ -5,9 +5,11 @@ import type {
   FeatureGrant,
   FeatureGroup,
   FeatureSource,
+  OverageListener,
   Subject,
   UsageStore,
 } from "./contract";
+import { allowsConsumption, consumptionCeiling, entitled, overageDelta } from "./quota";
 import { FeatureRegistry, type FeatureDefinitionInput } from "./registry";
 import {
   FeatureGroupRegistry,
@@ -124,6 +126,7 @@ export class FeatureManager {
 
   private preStrategies = new Map<string, PreStrategy>();
   private preRemainingStrategies = new Map<string, PreRemainingStrategy>();
+  private overageListeners: OverageListener[] = [];
 
   constructor(opts: FeatureManagerOptions = {}) {
     this.registry = opts.registry ?? new FeatureRegistry();
@@ -172,6 +175,24 @@ export class FeatureManager {
 
   preRemainingStrategyNames(): string[] {
     return [...this.preRemainingStrategies.keys()];
+  }
+
+  /**
+   * Listen for billable overage as it is recorded.
+   *
+   * Returns an unsubscribe function.
+   *
+   * Registering a listener is also one of the two ways to ENABLE overage at all:
+   * consumption past the included quantity is permitted only when it can be
+   * recorded, either by a store implementing `addOverage` or by a listener that
+   * takes responsibility for it. Unbilled usage is the one failure here that
+   * cannot be repaired after the fact, so the default refuses in that direction.
+   */
+  onOverage(listener: OverageListener): () => void {
+    this.overageListeners.push(listener);
+    return () => {
+      this.overageListeners = this.overageListeners.filter((l) => l !== listener);
+    };
   }
 
   /** Append a `FeatureSource` (the catalog plug-in point). */
@@ -235,23 +256,16 @@ export class FeatureManager {
     }
 
     // 5. Sources (FeatureSource[]) — a grant with enabled:true turns it on.
+    //
+    // ENTITLEMENT ONLY, from 0.5.0. This branch used to answer "enabled AND
+    // there is quota left" for a resource grant, while steps 2-4 above answered
+    // "enabled" for the same feature defined in the registry — one question with
+    // two answers, decided by which layer the plan happened to be modelled in.
+    // A metered feature whose allowance is exhausted is still ENTITLED: the
+    // customer is still paying for it. `canConsume` is the quota-aware read.
     const grant = await this.grantFor(feature, subject, context);
-    if (grant) {
-      if (grant.type === "resource") {
-        // Resource grant only "enables" when there's remaining quota.
-        if (!grant.enabled) {
-          return false;
-        }
-        const limit = grant.includedQuantity;
-        if (limit === null || limit === undefined) {
-          return true; // unlimited
-        }
-        const used = await this.usage.getUsage(subject, feature);
-        return Math.max(0, limit - used) > 0;
-      }
-      if (grant.enabled) {
-        return true;
-      }
+    if (grant && entitled(grant.enabled, grant.type, grant.includedQuantity)) {
+      return true;
     }
 
     // 6. Default deny.
@@ -266,6 +280,48 @@ export class FeatureManager {
   /** Alias for canAccess. */
   hasFeature(feature: string, subject?: Subject, context?: unknown): Promise<boolean> {
     return this.canAccess(feature, subject, context);
+  }
+
+  /**
+   * An explicit alias for `canAccess` — entitlement, regardless of quota.
+   *
+   * Exists so a call site that MEANS entitlement says so, and never has to be
+   * re-read to find out which of the two questions it was asking.
+   */
+  isEntitled(feature: string, subject?: Subject, context?: unknown): Promise<boolean> {
+    return this.canAccess(feature, subject, context);
+  }
+
+  /**
+   * Entitled AND `amount` fits under the ceiling — the quota-aware read.
+   *
+   * Exactly what `canAccess` answered for a source grant before 0.5.0, plus
+   * billable overage: the ceiling is `includedQuantity + overageLimit`, so a
+   * plan with an overage allowance permits consumption past its included
+   * quantity.
+   *
+   * **A READ, not a gate.** Between this and the write that follows, another
+   * request can take the last unit. Use `tryConsume` for an actual consumption.
+   */
+  async canConsume(
+    feature: string,
+    subject?: Subject,
+    amount = 1,
+    context?: unknown,
+    period?: BillingPeriod,
+  ): Promise<boolean> {
+    if (!(await this.canAccess(feature, subject, context))) {
+      return false;
+    }
+    const included = await this.includedFor(feature, subject, context, period);
+    if (included === null) {
+      return true; // unlimited, or not a resource feature
+    }
+    const ceiling = this.canRecordOverage()
+      ? consumptionCeiling(included, await this.overageLimitFor(feature, subject, context))
+      : included;
+    const used = await this.usage.getUsage(subject, feature, period);
+    return allowsConsumption(used, amount, ceiling);
   }
 
   /**
@@ -647,24 +703,46 @@ export class FeatureManager {
     return this.usage.getUsage(subject, feature, period);
   }
 
-  /** Increment usage (does NOT enforce quota — use `tryConsume` for that). */
+  /** Billable overage recorded for this subject + feature in the period. */
+  async overageFor(feature: string, subject: Subject, period?: BillingPeriod): Promise<number> {
+    if (typeof this.usage.getOverage !== "function") {
+      return 0;
+    }
+    return this.usage.getOverage(subject, feature, period);
+  }
+
+  /**
+   * Increment usage. Does NOT enforce the quota — use `tryConsume` for that.
+   *
+   * It does still RECORD billable overage, because recording is not enforcing,
+   * and an invoice built from a figure only some code paths maintain is worse
+   * than no figure at all.
+   */
   async increment(
     feature: string,
     subject: Subject,
     amount = 1,
     period?: BillingPeriod,
+    context?: unknown,
   ): Promise<void> {
+    const included = await this.includedFor(feature, subject, context, period);
+    const used = await this.usage.getUsage(subject, feature, period);
     await this.usage.addUsage(subject, feature, amount, period);
+    await this.recordOverage(feature, subject, used, amount, context, period, included);
   }
 
-  /** Decrement usage (clamped at 0). */
+  /** Decrement usage (clamped at 0), unwinding the billable share with it. */
   async decrement(
     feature: string,
     subject: Subject,
     amount = 1,
     period?: BillingPeriod,
+    context?: unknown,
   ): Promise<void> {
+    const included = await this.includedFor(feature, subject, context, period);
+    const used = await this.usage.getUsage(subject, feature, period);
     await this.usage.addUsage(subject, feature, -amount, period);
+    await this.recordOverage(feature, subject, used, -amount, context, period, included);
   }
 
   /**
@@ -680,22 +758,230 @@ export class FeatureManager {
     context?: unknown,
     period?: BillingPeriod,
   ): Promise<boolean> {
-    const remaining = await this.remaining(feature, subject, context, period);
-    if (remaining === null) {
-      // Unlimited: still record usage so metering stays accurate.
+    if (amount < 0) {
+      // A negative "consume" is a refund wearing a disguise, and it would walk
+      // straight past `used + amount <= ceiling`. `decrement` exists for it.
+      throw new RangeError(
+        `tryConsume was given a negative amount (${amount}). Use decrement() to return quota; ` +
+          "a negative consume bypasses the ceiling it is meant to enforce.",
+      );
+    }
+
+    const included = await this.includedFor(feature, subject, context, period);
+
+    if (included === null) {
+      // Unlimited is not unmetered: a host that cannot bill what it cannot count
+      // is the reason this records rather than short-circuits.
       await this.usage.addUsage(subject, feature, amount, period);
       return true;
     }
+
+    const ceiling = this.canRecordOverage()
+      ? consumptionCeiling(included, await this.overageLimitFor(feature, subject, context))
+      : included;
+
+    // `used` and the ceiling MUST measure the same window. Deriving a limit from
+    // one bucket and enforcing it against another produces a quantity that does
+    // not exist, and it did until 0.4.0.
     const used = await this.usage.getUsage(subject, feature, period);
-    const limit = remaining + used;
+
     if (typeof this.usage.tryConsume === "function") {
-      return this.usage.tryConsume(subject, feature, amount, limit, period);
+      const taken = await this.usage.tryConsume(subject, feature, amount, ceiling as number, period);
+      if (taken) {
+        await this.recordOverage(feature, subject, used, amount, context, period, included);
+      }
+      return taken;
     }
-    if (remaining < amount) {
+
+    if (!allowsConsumption(used, amount, ceiling)) {
       return false;
     }
     await this.usage.addUsage(subject, feature, amount, period);
+    await this.recordOverage(feature, subject, used, amount, context, period, included);
     return true;
+  }
+
+  // ---- Overage -------------------------------------------------------
+
+  /**
+   * The resolved quota for a resource feature, BEFORE usage is subtracted.
+   *
+   *   - `undefined` — not a resource feature here, or a `remaining` callback
+   *     owns the answer and there is no limit to read.
+   *   - `null` — unlimited.
+   *   - a number — the included quantity.
+   *
+   * Extracted so `includedFor` does not have to reconstruct it as
+   * `remaining + used`. That derivation is right only while usage is below the
+   * line: `remaining` is clamped at zero, so once a subject is in overage it
+   * reports the limit as whatever they have already spent — and every overage
+   * calculation downstream then measures from the wrong line.
+   */
+  private async limitFor(
+    feature: string,
+    subject: Subject,
+    context?: unknown,
+  ): Promise<number | null | undefined> {
+    const groupLimit = await this.resolveGroupLimitOverride(feature, subject, context);
+    const sourceLimit = await this.resolveSourceLimit(feature, subject, context);
+    const externalLimit = maxNullable(groupLimit, sourceLimit);
+
+    const definition = await this.registry.definition(feature);
+    const config = this.config.get(feature);
+
+    let def: Feature;
+    if (definition !== null && definition.type === "resource") {
+      def = this.withMergedLimit(definition, externalLimit);
+    } else if (config !== undefined && config.type === "resource") {
+      def = this.withMergedLimit(config, externalLimit);
+    } else if (externalLimit !== null) {
+      def = { key: feature, type: "resource", limit: externalLimit };
+    } else {
+      // `resolveSourceLimit` returns null for BOTH "no source limit" and
+      // "an unlimited grant", so the grant itself is the only way to tell.
+      const grant = await this.grantFor(feature, subject, context);
+      if (grant && grant.enabled && grant.type === "resource") {
+        return null; // unlimited
+      }
+      return undefined;
+    }
+
+    if (typeof def.remaining === "function") {
+      return undefined; // the callback owns it; there is no limit to read
+    }
+
+    const rawLimit = def.limit;
+    const limit =
+      typeof rawLimit === "function" ? Math.trunc(await rawLimit(subject, context)) : rawLimit;
+    return limit === null || limit === undefined ? null : limit;
+  }
+
+  /**
+   * The included quantity for a resource feature; `null` when unlimited or when
+   * the feature is not metered at all.
+   */
+  private async includedFor(
+    feature: string,
+    subject: Subject,
+    context?: unknown,
+    period?: BillingPeriod,
+  ): Promise<number | null> {
+    const limit = await this.limitFor(feature, subject, context);
+    if (limit !== undefined) {
+      return limit;
+    }
+    // A `remaining` callback owns the answer, so the line has to be derived
+    // from it. Correct while usage is at or below the line, which is the only
+    // place a caller-supplied `remaining` gives enough to work with.
+    const remaining = await this.remaining(feature, subject, context, period);
+    if (remaining === null) {
+      return null;
+    }
+    return remaining + (await this.usage.getUsage(subject, feature, period));
+  }
+
+  /**
+   * Can billable overage be written down anywhere?
+   *
+   * **A store that cannot record overage does not get to permit it.** With
+   * neither `addOverage` nor an `onOverage` listener the ceiling stays at the
+   * included quantity, which is what every host had before 0.5.0. That is the
+   * whole opt-in mechanism, and it fails closed: unbilled usage is the one
+   * failure here that cannot be repaired after the fact.
+   */
+  private canRecordOverage(): boolean {
+    return typeof this.usage.addOverage === "function" || this.overageListeners.length > 0;
+  }
+
+  /**
+   * MAX billable-overage allowance across the definition, group overrides and
+   * source grants. Same most-generous rule `limit` uses: a paid plan may raise
+   * an allowance and may never silently lower one.
+   */
+  private async overageLimitFor(
+    feature: string,
+    subject: Subject,
+    context?: unknown,
+  ): Promise<number | null> {
+    let max: number | null = null;
+    const consider = (value: number | null | undefined): void => {
+      if (value === null || value === undefined) {
+        return;
+      }
+      const n = Math.trunc(value);
+      if (max === null || n > max) {
+        max = n;
+      }
+    };
+
+    consider((await this.registry.definition(feature))?.overageLimit);
+    consider(this.config.get(feature)?.overageLimit);
+
+    for (const groupKey of await this.matchingEnabledGroups(feature, subject, context)) {
+      consider(this.groupRegistry.resolvedOverrides(groupKey)[feature]?.overageLimit);
+    }
+
+    for (const source of this.sources) {
+      for (const g of await source.grantsFor(subject, context)) {
+        if (g.key === feature && g.enabled && g.type === "resource") {
+          consider(g.overageLimit);
+        }
+      }
+    }
+
+    return max;
+  }
+
+  /**
+   * Write down the billable share of a usage change, and announce it.
+   *
+   * `overageDelta` is signed, so a refund unwinds by the same arithmetic that
+   * recorded it and the two directions cannot drift apart. The event fires only
+   * on the way up: a credit is a decision about money, and inventing one from a
+   * usage correction is not this package's call.
+   */
+  private async recordOverage(
+    feature: string,
+    subject: Subject,
+    usedBefore: number,
+    amount: number,
+    context?: unknown,
+    period?: BillingPeriod,
+    knownIncluded?: number | null,
+  ): Promise<void> {
+    if (!this.canRecordOverage()) {
+      return;
+    }
+    const included =
+      knownIncluded === undefined
+        ? await this.includedFor(feature, subject, context, period)
+        : knownIncluded;
+    if (included === null) {
+      return; // unlimited: no included line, so nothing above it
+    }
+
+    const delta = overageDelta(usedBefore, amount, included);
+    if (delta === 0) {
+      return;
+    }
+
+    if (typeof this.usage.addOverage === "function") {
+      await this.usage.addOverage(subject, feature, delta, period);
+    }
+
+    if (delta > 0) {
+      const recorded = await this.overageFor(feature, subject, period);
+      for (const listener of this.overageListeners) {
+        await listener({
+          feature,
+          subject,
+          units: delta,
+          totalUnits: recorded > 0 ? recorded : delta,
+          includedQuantity: included,
+          period,
+        });
+      }
+    }
   }
 
   /** Reset usage for a subject's billing period (the renewal reset). */
