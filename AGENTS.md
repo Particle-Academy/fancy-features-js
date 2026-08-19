@@ -91,6 +91,11 @@ The PHP twin is the reference for behaviour; where they disagree, that is a
 finding, not a choice. Cross-runtime rows live in `fancy-conformance` — put a
 fixture there rather than asserting parity in prose.
 
+They load from the INSTALLED package, never a relative path to a sibling
+checkout: that is what made its two predecessor harnesses run in exactly one
+directory layout. `PINNED_SUITE_VERSION` is moved deliberately, never to match
+whatever is on disk.
+
 ## Testing
 
 `npm test` (vitest). No network. Anything metered gets a test that would fail if

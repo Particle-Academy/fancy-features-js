@@ -7,8 +7,13 @@ import {
   entitled,
   overageDelta,
 } from "../src/quota";
-import { runSharedTable, suitesRoot } from "./shared-suites";
-import { loadSuiteFrom } from "@particle-academy/fancy-conformance";
+import {
+  formatSummary,
+  loadSuite,
+  runTable,
+  suiteVersion,
+  type ConformanceCase,
+} from "@particle-academy/fancy-conformance";
 
 const SUITE = "shared/feature-entitlement";
 
@@ -31,8 +36,18 @@ const SUITE = "shared/feature-entitlement";
  * amount, not the distance from the line. The obvious
  * `Math.max(0, after - included)` answers 50 where the truth is 10, re-billing
  * every unit already recorded. That one is an invoice, not a test failure.
+ *
+ * Loaded from the INSTALLED package, never a relative path to a sibling
+ * checkout: the conformance repo's own runner notes record why — its two older
+ * parity harnesses hard-coded `../../<repo>/src/`, so they worked in exactly one
+ * directory layout and silently no-op'd everywhere else, CI included.
  */
-function runCase(c: { fn?: string; id: string; input: Record<string, unknown> }): unknown {
+
+/** Moved deliberately, never automatically. A pin that follows disk asserts nothing. */
+const PINNED_SUITE_VERSION = "0.4.0";
+
+/** Dispatch one case to the implementation under test. */
+function runCase(c: ConformanceCase): unknown {
   const i = c.input as Record<string, never>;
   switch (c.fn) {
     case "entitled":
@@ -50,24 +65,20 @@ function runCase(c: { fn?: string; id: string; input: Record<string, unknown> })
   }
 }
 
-it("loads the shared/feature-entitlement suite", () => {
+it("loads the shared/feature-entitlement suite from the installed package", () => {
   // The vacuity guard, and the one that matters most. A suite that resolves,
   // returns nothing and reports "0 failed" reads exactly like full coverage.
-  const { cases } = loadSuiteFrom(suitesRoot(SUITE), SUITE);
-  expect(cases.length).toBeGreaterThanOrEqual(26);
+  expect(loadSuite(SUITE).cases.length).toBeGreaterThanOrEqual(26);
+  expect(suiteVersion()).toBe(PINNED_SUITE_VERSION);
 });
 
 it("agrees with the shared feature-entitlement table", () => {
-  const summary = runSharedTable(SUITE, runCase);
+  const summary = runTable(SUITE, runCase, { language: "node" });
 
   // Printed unconditionally, pass or fail. A summary shown only on failure
   // cannot tell anyone the suite ran at all.
-  const report = [
-    `${summary.suite} [node] — ${summary.cases} cases`,
-    `  ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped`,
-    ...summary.lines,
-  ].join("\n");
-  console.info(`\n${report}`);
+  console.info(`
+${formatSummary(summary)}`);
 
-  expect(summary.ok, report).toBe(true);
+  expect(summary.ok, formatSummary(summary)).toBe(true);
 });
