@@ -273,7 +273,17 @@ export class FeatureManager {
    * resource feature. Order: pre-remaining strategies → MAX(group/source limit,
    * feature.limit) − usage, clamped ≥0.
    */
-  async remaining(feature: string, subject?: Subject, context?: unknown): Promise<number | null> {
+  /**
+   * Remaining quota. `period` scopes the usage side of the calculation — omit it
+   * and you get lifetime usage, which is a different question and was the only
+   * one this could answer before.
+   */
+  async remaining(
+    feature: string,
+    subject?: Subject,
+    context?: unknown,
+    period?: BillingPeriod,
+  ): Promise<number | null> {
     // Pre-remaining strategies. First non-null wins; clamp ≥0.
     for (const strategy of this.preRemainingStrategies.values()) {
       const verdict = await strategy(feature, subject, context);
@@ -295,6 +305,7 @@ export class FeatureManager {
         feature,
         subject,
         context,
+        period,
       );
     }
 
@@ -306,6 +317,7 @@ export class FeatureManager {
         feature,
         subject,
         context,
+        period,
       );
     }
 
@@ -317,6 +329,7 @@ export class FeatureManager {
         feature,
         subject,
         context,
+        period,
       );
     }
 
@@ -580,6 +593,7 @@ export class FeatureManager {
     feature: string,
     subject: Subject,
     context?: unknown,
+    period?: BillingPeriod,
   ): Promise<number | null> {
     if (typeof definition.remaining === "function") {
       return callDefinitionCallback(definition.remaining, feature, subject, context);
@@ -590,7 +604,7 @@ export class FeatureManager {
     if (limit === null || limit === undefined) {
       return null; // unlimited
     }
-    const used = await this.resourceUsage(definition, feature, subject, context);
+    const used = await this.resourceUsage(definition, feature, subject, context, period);
     return Math.max(0, limit - used);
   }
 
@@ -599,11 +613,12 @@ export class FeatureManager {
     feature: string,
     subject: Subject,
     context?: unknown,
+    period?: BillingPeriod,
   ): Promise<number> {
     if (typeof definition.usage === "function") {
       return callDefinitionCallback(definition.usage, feature, subject, context);
     }
-    return this.usage.getUsage(subject, feature);
+    return this.usage.getUsage(subject, feature, period);
   }
 
   private async fill(
@@ -665,7 +680,7 @@ export class FeatureManager {
     context?: unknown,
     period?: BillingPeriod,
   ): Promise<boolean> {
-    const remaining = await this.remaining(feature, subject, context);
+    const remaining = await this.remaining(feature, subject, context, period);
     if (remaining === null) {
       // Unlimited: still record usage so metering stays accurate.
       await this.usage.addUsage(subject, feature, amount, period);

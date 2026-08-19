@@ -15,6 +15,32 @@ upgrading.
 
 ## [Unreleased]
 
+## 0.4.0 — 2026-08-18
+
+### Fixed
+
+- **Billing periods reached the writes but not the reads, so the enforced quota
+  was not the configured one.** `tryConsume` derived its ceiling as
+  `remaining + used`. It read `used` scoped to the billing period, but
+  `remaining` with no period at all — nothing on the resource path accepted one
+  — so the two terms measured different windows and their sum was a quantity
+  that does not exist.
+
+  With a lifetime total above the period total it **under-grants**, refusing
+  consumption the plan allows. Reset a period without resetting lifetime and it
+  **over-grants**. Neither announces itself.
+
+  `remaining()` now takes an optional `period`, and it is threaded through the
+  whole resource path (`resourceRemaining`, `resourceUsage`) so both terms
+  measure the same window.
+
+### Added
+
+- `remaining(feature, subject, context, period?)` — the fourth argument is new
+  and optional. Omitting it keeps the previous lifetime-scoped behaviour, which
+  is the right answer to a different question.
+
+
 ## 0.3.0 — 2026-08-18
 
 ### Fixed
