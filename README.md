@@ -1,11 +1,11 @@
 # @particle-academy/fancy-features
 
-[![Fancy UI suite](art/fancy-ui.svg)](https://particle.academy)
+[![Fancified](art/fancified.svg)](https://particle.academy)
 
 Headless, **zero-dependency** feature-management engine — boolean flags +
 metered-resource gating, feature **groups** (with `extends`, overrides, and
 callable gates), and quota usage tracking. The Node/TypeScript mirror of the
-PHP [`particle-academy/laravel-fms`](https://github.com/Particle-Academy/laravel-fms)
+PHP [`particle-academy/laravel-fms`](https://github.com/Particle-Academy/laravel-feature-management-system)
 — same resolution semantics, no Laravel/Eloquent. It also **owns the shared
 feature contract** consumed by
 [`@particle-academy/fancy-catalog`](https://github.com/Particle-Academy/fancy-catalog-js).
