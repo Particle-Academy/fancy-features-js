@@ -39,6 +39,8 @@ upgrading.
   and the published package does not ship our lockfile, so the exposure was
   this repo's own dev server.
 
+- Dev-only lockfile update: `vitest` 4.1.11 to 4.1.12, which brings `@vitest/mocker` 4.1.12 (GHSA-qxg6-89mg-rqv8, GHSA-xp26-3454-mjgp). Test tooling only; nothing ships in the package. Consumer action: none.
+
 ## 0.5.0 — 2026-08-19
 
 Two owner rulings, matched by `laravel-fms` 0.11.0 and the Python twin. **Read
