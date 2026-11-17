@@ -10,7 +10,7 @@ metered-resource gating, framework-free.
 
 This file describes **this repository's code**. Process rules — publishing,
 versioning, backports, the support lifecycle — live in the envelope's
-`AGENTS.md` and are deliberately not repeated here, because a copy in a repo
+`RULES.md` and are deliberately not repeated here, because a copy in a repo
 freezes at whatever the rule was when the branch was cut.
 
 ## What this package is
